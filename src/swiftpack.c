@@ -42,6 +42,16 @@ static unsigned hash3(const unsigned char *p) {
     return (unsigned)((v * 2654435761u) >> 16);
 }
 
+static uint32_t crc32(const unsigned char *data, size_t size) {
+    uint32_t crc = 0xffffffffu;
+    for (size_t i = 0; i < size; ++i) {
+        crc ^= data[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
+    }
+    return ~crc;
+}
+
 /* Compare match candidates 16 bytes at a time when the target supports SSE2. */
 static size_t match_length(const unsigned char *a, const unsigned char *b,
                            size_t limit) {
@@ -82,7 +92,7 @@ int swiftpack_compress(const unsigned char *in, size_t n,
     if (!in) in = &empty;
     *output = NULL; *output_size = 0;
     if (n > INT32_MAX || n > 0x00ffffffffffffffULL || !reserve(&b, HEADER_SIZE)) return 0;
-    memcpy(b.data, "SWPK", 4); b.data[4] = 1;
+    memcpy(b.data, "SWPK", 4); b.data[4] = 2;
     for (unsigned k = 0; k < 7; ++k) b.data[5+k] = (unsigned char)(((uint64_t)n >> (8*k)) & 255u);
     b.size = HEADER_SIZE;
     table = (int32_t *)malloc(HASH_SIZE * sizeof(*table));
@@ -111,6 +121,11 @@ int swiftpack_compress(const unsigned char *in, size_t n,
         } else ++i;
     }
     if (!emit_literals(&b, in + literal, n - literal)) goto fail;
+    {
+        uint32_t checksum = crc32(in, n);
+        for (unsigned k = 0; k < 4; ++k)
+            if (!byte(&b, (unsigned char)(checksum >> (8*k)))) goto fail;
+    }
     free(table); *output = b.data; *output_size = b.size; return 1;
 fail:
     free(table); free(b.data); return 0;
@@ -119,24 +134,28 @@ fail:
 int swiftpack_decompress(const unsigned char *in, size_t n,
                          unsigned char **output, size_t *output_size) {
     uint64_t declared = 0;
-    size_t pos = HEADER_SIZE, outpos = 0;
+    size_t pos = HEADER_SIZE, outpos = 0, payload_end;
+    unsigned version;
     unsigned char *out;
     if (!output || !output_size || !in || n < HEADER_SIZE) return 0;
     *output = NULL; *output_size = 0;
-    if (memcmp(in, "SWPK", 4) || in[4] != 1) return 0;
+    if (memcmp(in, "SWPK", 4) || (in[4] != 1 && in[4] != 2)) return 0;
+    version = in[4];
+    if (version == 2 && n < HEADER_SIZE + 4) return 0;
+    payload_end = n - (version == 2 ? 4u : 0u);
     for (unsigned k = 0; k < 7; ++k) declared |= (uint64_t)in[5+k] << (8*k);
     if (declared > SIZE_MAX) return 0;
     out = (unsigned char *)malloc(declared ? (size_t)declared : 1);
     if (!out) return 0;
-    while (pos < n) {
+    while (pos < payload_end) {
         unsigned token = in[pos++];
         if (!(token & 0x80u)) {
             size_t len = (token & 0x7fu) + 1u;
-            if (len > n-pos || len > (size_t)declared-outpos) goto bad;
+            if (len > payload_end-pos || len > (size_t)declared-outpos) goto bad;
             memcpy(out+outpos, in+pos, len); pos += len; outpos += len;
         } else {
             size_t len = (token & 0x7fu) + MIN_MATCH, off;
-            if (n-pos < 2) goto bad;
+            if (payload_end-pos < 2) goto bad;
             off = (size_t)in[pos] | ((size_t)in[pos+1] << 8); pos += 2;
             if (!off || off > outpos || len > (size_t)declared-outpos) goto bad;
             for (size_t k = 0; k < len; ++k) out[outpos+k] = out[outpos+k-off];
@@ -144,6 +163,11 @@ int swiftpack_decompress(const unsigned char *in, size_t n,
         }
     }
     if (outpos != (size_t)declared) goto bad;
+    if (version == 2) {
+        uint32_t expected = 0;
+        for (unsigned k = 0; k < 4; ++k) expected |= (uint32_t)in[payload_end+k] << (8*k);
+        if (crc32(out, outpos) != expected) goto bad;
+    }
     *output = out; *output_size = outpos; return 1;
 bad:
     free(out); return 0;

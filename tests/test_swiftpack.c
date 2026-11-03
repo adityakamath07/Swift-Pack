@@ -26,6 +26,26 @@ int main(void) {
         fputs("round-trip test failed\n", stderr); return 1;
     }
 
+    /* Version 1 remains readable, while v2 checksum damage is rejected. */
+    {
+        const unsigned char legacy[] = {'S','W','P','K',1,5,0,0,0,0,0,0,4,'h','e','l','l','o'};
+        unsigned char *packed = NULL, *restored = NULL;
+        size_t packed_size = 0, restored_size = 0;
+        if (!swiftpack_decompress(legacy, sizeof(legacy), &restored, &restored_size) ||
+            restored_size != 5 || memcmp(restored, "hello", 5)) {
+            fputs("version 1 compatibility failed\n", stderr); free(restored); return 1;
+        }
+        free(restored); restored = NULL;
+        if (!swiftpack_compress((const unsigned char *)"checksum", 8, &packed, &packed_size)) {
+            fputs("checksum compression failed\n", stderr); return 1;
+        }
+        packed[packed_size - 1] ^= 1;
+        if (swiftpack_decompress(packed, packed_size, &restored, &restored_size)) {
+            fputs("corrupted checksum was accepted\n", stderr); free(restored); free(packed); return 1;
+        }
+        free(packed);
+    }
+
     /* Invalid magic and a back-reference before any output must be rejected. */
     {
         const unsigned char bad_magic[] = {'N','O','P','E',1,0,0,0,0,0,0,0};

@@ -18,7 +18,7 @@ The project aims to investigate the trade-offs between compression speed, decomp
 - [x] Basic malformed-input validation
 - [x] SSE2 match comparison with a portable scalar fallback
 - [ ] Multithreaded block compression
-- [ ] Checksums for data integrity
+- [x] CRC32 checksums for data integrity
 - [ ] Performance benchmarks against LZ4
 
 ## Goals
@@ -65,4 +65,4 @@ make fuzz
 ./swiftpack.exe -d input.swp restored.bin
 ```
 
-The `-c` operation compresses a file; `-d` decompresses it. SwiftPack streams begin with `SWPK`, a format version, and the original size, followed by literal runs and length/offset matches. This initial project format is not compatible with LZ4 files.
+The `-c` operation compresses a file; `-d` decompresses it. New SwiftPack v2 streams begin with `SWPK`, a format version, and the original size, followed by literal runs, length/offset matches, and a CRC32 checksum of the uncompressed data. The decoder also accepts v1 streams, which do not contain a checksum. SwiftPack files are not compatible with LZ4 files.
